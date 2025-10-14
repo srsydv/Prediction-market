@@ -1,0 +1,173 @@
+buy() calculation
+
+I'll explain the `buy` function with a detailed example and walk through all the calculations step by step.
+
+## **LMSR Buy Function Explanation**
+
+The `buy` function implements the core LMSR (Logarithmic Market Scoring Rule) mechanism for purchasing prediction market shares. Let me break it down with a concrete example.
+
+### **Example Scenario:**
+- **Market**: "Will Bitcoin reach $100k by end of 2024?"
+- **Collateral**: USDC (6 decimals)
+- **Liquidity Parameter (b)**: 1000 (in 64.64 fixed point)
+- **Current State**: qYes = 0, qNo = 0 (no shares sold yet)
+- **User wants to buy**: 100 Yes shares
+
+---
+
+## **Step-by-Step Calculation:**
+
+### **1. Input Validation**
+```solidity
+require(side == 0 || side == 1, "invalid side");  // 0 = Yes, 1 = No
+require(m.state == MarketState.Active, "market not active");
+require(shareAmount > 0, "need >0");
+```
+✅ **Example**: User wants to buy 100 Yes shares (side = 0)
+
+### **2. Convert Share Amount to Fixed Point**
+```solidity
+int128 delta = _toFixed(shareAmount, m.collateralDecimals);
+```
+
+**Calculation:**
+- `shareAmount = 100` (raw shares)
+- `collateralDecimals = 6` (USDC)
+- Since 6 ≤ 18: `scaled = 100 * 10^(18-6) = 100 * 10^12 = 100,000,000,000,000`
+- `delta = ABDKMath64x64.fromUInt(100,000,000,000,000)`
+
+**Result**: `delta = 100,000,000,000,000` (in 64.64 fixed point)
+
+### **3. Calculate Current Cost**
+```solidity
+int128 cBefore = _cost(m, m.qYes, m.qNo);
+```
+
+**Using the LMSR Cost Function:**
+```
+C(q) = b * ln(e^(q_yes/b) + e^(q_no/b))
+```
+
+**Calculation:**
+- `qYes = 0`, `qNo = 0` (initial state)
+- `b = 1000` (liquidity parameter)
+- `uYes = 0/1000 = 0`, `uNo = 0/1000 = 0`
+- `eYes = exp(0) = 1`, `eNo = exp(0) = 1`
+- `sumExp = 1 + 1 = 2`
+- `lnSum = ln(2) ≈ 0.693`
+- `cBefore = 1000 * 0.693 = 693`
+
+**Result**: `cBefore = 693` (in 64.64 fixed point)
+
+### **4. Calculate New Quantities**
+```solidity
+int128 newQYes = m.qYes;  // 0
+int128 newQNo = m.qNo;    // 0
+if (side == 0) {
+    newQYes = ABDKMath64x64.add(newQYes, delta);  // 0 + 100,000,000,000,000
+}
+```
+
+**Result**: 
+- `newQYes = 100,000,000,000,000`
+- `newQNo = 0`
+
+### **5. Calculate New Cost**
+```solidity
+int128 cAfter = _cost(m, newQYes, newQNo);
+```
+
+**Calculation:**
+- `qYes = 100,000,000,000,000`, `qNo = 0`
+- `uYes = 100,000,000,000,000/1000 = 100,000,000,000`
+- `uNo = 0/1000 = 0`
+- `eYes = exp(100,000,000,000) ≈ very large number`
+- `eNo = exp(0) = 1`
+- `sumExp = eYes + 1 ≈ eYes`
+- `lnSum = ln(eYes) ≈ 100,000,000,000`
+- `cAfter = 1000 * 100,000,000,000 = 100,000,000,000,000`
+
+**Result**: `cAfter = 100,000,000,000,000`
+
+### **6. Calculate Cost to Pay**
+```solidity
+int128 costFixed = ABDKMath64x64.sub(cAfter, cBefore);
+uint256 cost = _fromFixed(costFixed, m.collateralDecimals);
+```
+
+**Calculation:**
+- `costFixed = 100,000,000,000,000 - 693 = 99,999,999,999,307`
+- Convert back to USDC units: `cost = 99,999,999,999,307 / 10^12 = 99,999.999999307`
+
+**Result**: `cost ≈ 100,000 USDC` (approximately 1 USDC per share)
+
+### **7. Apply Fees**
+```solidity
+uint256 fee = 0;
+if (m.feeBps > 0) {
+    fee = (cost * m.feeBps) / 10000;
+}
+uint256 total = cost + fee;
+```
+
+**Example with 1% fee:**
+- `feeBps = 100` (1%)
+- `fee = (100,000 * 100) / 10000 = 1,000 USDC`
+- `total = 100,000 + 1,000 = 101,000 USDC`
+
+### **8. Transfer Collateral**
+```solidity
+m.collateral.safeTransferFrom(msg.sender, address(this), total);
+m.escrow += cost;
+```
+
+**Result**: 
+- User pays 101,000 USDC
+- Contract holds 100,000 USDC in escrow
+- Creator receives 1,000 USDC fee
+
+### **9. Mint Shares**
+```solidity
+uint256 tokenId = (side == 0) ? _yesId(marketId) : _noId(marketId);
+_mint(msg.sender, tokenId, shareAmount, "");
+```
+
+**Result**: User receives 100 Yes shares (ERC1155 tokens)
+
+### **10. Update Market State**
+```solidity
+m.qYes = newQYes;  // 100,000,000,000,000
+m.qNo = newQNo;    // 0
+```
+
+---
+
+## **Key Insights:**
+
+### **1. LMSR Pricing Behavior:**
+- **First buyer**: Pays close to 1:1 ratio (100 shares ≈ 100 USDC)
+- **As more people buy**: Price becomes more expensive due to LMSR curve
+- **Price increases exponentially** as more shares are sold
+
+### **2. Liquidity Parameter (b):**
+- **Higher b**: More liquid, prices change more slowly
+- **Lower b**: Less liquid, prices change more quickly
+- **b = 1000**: Moderate liquidity for this example
+
+### **3. Decimal Handling:**
+- **USDC (6 decimals)**: Properly scaled to 18-decimal fixed point
+- **ETH (18 decimals)**: Would work seamlessly
+- **Any ERC20**: Automatically detected and handled
+
+### **4. Fee Structure:**
+- **Platform fee**: Goes to market creator
+- **Escrow**: Only the actual cost amount
+- **Transparent**: Fee is calculated and displayed
+
+### **5. Security Features:**
+- **Reentrancy protection**: Prevents attacks
+- **Input validation**: Ensures valid parameters
+- **Liquidity checks**: Prevents insufficient escrow
+- **Cost validation**: Prevents zero or negative costs
+
+This implementation provides a robust, mathematically sound prediction market mechanism that automatically adjusts prices based on supply and demand while maintaining proper economic incentives!
