@@ -81,9 +81,9 @@ library ABDKMath64x64 {
     // Simplified exp function using approximation
     function exp(int128 x) internal pure returns (int128) {
         require(x >= -0x400000000000000000 && x <= 0x7FFFFFFFFFFFFFFF);
-        
+
         if (x == 0) return 0x10000000000000000; // 1.0 in 64.64
-        
+
         // For simplicity, use a basic approximation
         // In production, use a proper implementation
         if (x > 0) {
@@ -96,10 +96,11 @@ library ABDKMath64x64 {
     // Simplified ln function using approximation
     function ln(int128 x) internal pure returns (int128) {
         require(x > 0);
-        
+
         // For simplicity, use a basic approximation
         // In production, use a proper implementation
-        if (x >= 0x10000000000000000) { // x >= 1
+        if (x >= 0x10000000000000000) {
+            // x >= 1
             return int128(x - 0x10000000000000000); // x - 1 approximation
         } else {
             return int128(0x10000000000000000 - x); // 1 - x approximation
@@ -110,29 +111,57 @@ library ABDKMath64x64 {
 contract LMSRMarket is ERC1155, ReentrancyGuard, Ownable {
     using SafeERC20 for IERC20;
 
-    enum MarketState {Active, Resolved, Cancelled}
+    enum MarketState {
+        Active,
+        Resolved,
+        Cancelled
+    }
     struct Market {
         address creator;
         IERC20 collateral; // e.g., USDC
         uint8 collateralDecimals;
-        int128 b;           // liquidity parameter in 64.64 fixed point (ABDK)
-        int128 qYes;        // outstanding Yes shares (64.64)
-        int128 qNo;         // outstanding No shares (64.64)
+        int128 b; // liquidity parameter in 64.64 fixed point (ABDK)
+        int128 qYes; // outstanding Yes shares (64.64)
+        int128 qNo; // outstanding No shares (64.64)
         MarketState state;
-        uint8 outcome;      // 0 = unresolved, 1 = Yes, 2 = No
-        uint256 feeBps;     // platform fee in basis points on buys (optional)
-        uint256 escrow;     // collateral held in contract (raw units)
+        uint8 outcome; // 0 = unresolved, 1 = Yes, 2 = No
+        uint256 feeBps; // platform fee in basis points on buys (optional)
+        uint256 escrow; // collateral held in contract (raw units)
     }
 
     uint256 public marketCount;
     mapping(uint256 => Market) public markets;
 
     // ERC1155 token ids: we'll use id = marketId*2 + side (0 = Yes, 1 = No)
-    event MarketCreated(uint256 indexed marketId, address indexed creator, address collateral, int128 b, uint256 initialCollateral, uint256 feeBps);
-    event Bought(uint256 indexed marketId, address indexed buyer, uint8 side, uint256 amountShares, uint256 cost, uint256 fee);
-    event Sold(uint256 indexed marketId, address indexed seller, uint8 side, uint256 amountShares, uint256 refund);
+    event MarketCreated(
+        uint256 indexed marketId,
+        address indexed creator,
+        address collateral,
+        int128 b,
+        uint256 initialCollateral,
+        uint256 feeBps
+    );
+    event Bought(
+        uint256 indexed marketId,
+        address indexed buyer,
+        uint8 side,
+        uint256 amountShares,
+        uint256 cost,
+        uint256 fee
+    );
+    event Sold(
+        uint256 indexed marketId,
+        address indexed seller,
+        uint8 side,
+        uint256 amountShares,
+        uint256 refund
+    );
     event Resolved(uint256 indexed marketId, uint8 outcome);
-    event Redeemed(uint256 indexed marketId, address indexed redeemer, uint256 payout);
+    event Redeemed(
+        uint256 indexed marketId,
+        address indexed redeemer,
+        uint256 payout
+    );
     event MarketCancelled(uint256 indexed marketId);
 
     constructor() ERC1155("") Ownable(msg.sender) {}
@@ -146,31 +175,37 @@ contract LMSRMarket is ERC1155, ReentrancyGuard, Ownable {
     }
 
     // Convert uint256 (token amounts) to 64.64 fixedpoint (ABDK) given decimals
-    function _toFixed(uint256 raw, uint8 decimals) internal pure returns (int128) {
+    function _toFixed(
+        uint256 raw,
+        uint8 decimals
+    ) internal pure returns (int128) {
         // Convert raw token amount to 18-decimal fixed point representation
         // raw is in token's native decimals, we convert to 18 decimals for fixed point math
         if (decimals <= 18) {
             // Scale up: multiply by 10^(18-decimals)
-            uint256 scaled = raw * (10**(18 - decimals));
+            uint256 scaled = raw * (10 ** (18 - decimals));
             return ABDKMath64x64.fromUInt(scaled);
         } else {
             // Scale down: divide by 10^(decimals-18)
-            uint256 scaled = raw / (10**(decimals - 18));
+            uint256 scaled = raw / (10 ** (decimals - 18));
             return ABDKMath64x64.fromUInt(scaled);
         }
     }
 
     // Convert 64.64 fixedpoint back to uint256 token amount given decimals
-    function _fromFixed(int128 fixedPoint, uint8 decimals) internal pure returns (uint256) {
+    function _fromFixed(
+        int128 fixedPoint,
+        uint8 decimals
+    ) internal pure returns (uint256) {
         // Convert from 18-decimal fixed point back to token's native decimals
         uint256 scaled = ABDKMath64x64.toUInt(fixedPoint);
-        
+
         if (decimals <= 18) {
             // Scale down: divide by 10^(18-decimals)
-            return scaled / (10**(18 - decimals));
+            return scaled / (10 ** (18 - decimals));
         } else {
             // Scale up: multiply by 10^(decimals-18)
-            return scaled * (10**(decimals - 18));
+            return scaled * (10 ** (decimals - 18));
         }
     }
 
@@ -180,21 +215,32 @@ contract LMSRMarket is ERC1155, ReentrancyGuard, Ownable {
     /// @param bFixed liquidity parameter as a signed 64.64 fixed-point (use helper to build)
     /// @param initialCollateral collateral amount in token raw units to seed market
     /// @param feeBps optional fee in basis points charged on buys (e.g., 50 = 0.5%)
-    function createMarket(IERC20 collateralToken, int128 bFixed, uint256 initialCollateral, uint256 feeBps) external nonReentrant returns (uint256) {
+    function createMarket(
+        IERC20 collateralToken,
+        int128 bFixed,
+        uint256 initialCollateral,
+        uint256 feeBps
+    ) external nonReentrant returns (uint256) {
         require(initialCollateral > 0, "need collateral");
         require(bFixed > 0, "b must be positive");
         require(feeBps <= 1000, "fee too high"); // Max 10% fee
 
         // Get token decimals - try to call decimals() function
         uint8 tokenDecimals = 18; // Default to 18 decimals
-        try IERC20Metadata(address(collateralToken)).decimals() returns (uint8 decimals) {
+        try IERC20Metadata(address(collateralToken)).decimals() returns (
+            uint8 decimals
+        ) {
             tokenDecimals = decimals;
         } catch {
             // If decimals() doesn't exist, assume 18 decimals
         }
 
         // Pull collateral
-        collateralToken.safeTransferFrom(msg.sender, address(this), initialCollateral);
+        collateralToken.safeTransferFrom(
+            msg.sender,
+            address(this),
+            initialCollateral
+        );
 
         uint256 id = marketCount++;
         Market storage m = markets[id];
@@ -203,27 +249,38 @@ contract LMSRMarket is ERC1155, ReentrancyGuard, Ownable {
         m.collateralDecimals = tokenDecimals;
         m.b = bFixed;
         m.qYes = ABDKMath64x64.fromInt(0);
-        m.qNo  = ABDKMath64x64.fromInt(0);
+        m.qNo = ABDKMath64x64.fromInt(0);
         m.state = MarketState.Active;
         m.outcome = 0;
         m.feeBps = feeBps;
         m.escrow = initialCollateral;
 
-        emit MarketCreated(id, msg.sender, address(collateralToken), bFixed, initialCollateral, feeBps);
+        emit MarketCreated(
+            id,
+            msg.sender,
+            address(collateralToken),
+            bFixed,
+            initialCollateral,
+            feeBps
+        );
         return id;
     }
 
     // ---------- LMSR math ----------
     // Cost function: C(q) = b * ln( e^{q_yes / b} + e^{q_no / b} )
     // Here we use ABDKMath64x64 fixed-point operations.
-    function _cost(Market storage m, int128 qYes, int128 qNo) internal view returns (int128) {
+    function _cost(
+        Market storage m,
+        int128 qYes,
+        int128 qNo
+    ) internal view returns (int128) {
         // uYes = qYes / b
         int128 uYes = ABDKMath64x64.div(qYes, m.b);
-        int128 uNo  = ABDKMath64x64.div(qNo, m.b);
+        int128 uNo = ABDKMath64x64.div(qNo, m.b);
 
         // exp(uYes) + exp(uNo)
         int128 eYes = ABDKMath64x64.exp(uYes);
-        int128 eNo  = ABDKMath64x64.exp(uNo);
+        int128 eNo = ABDKMath64x64.exp(uNo);
 
         int128 sumExp = ABDKMath64x64.add(eYes, eNo);
         int128 lnSum = ABDKMath64x64.ln(sumExp);
@@ -235,10 +292,10 @@ contract LMSRMarket is ERC1155, ReentrancyGuard, Ownable {
     // Price of Yes: pYes = exp(qYes / b) / (exp(qYes / b) + exp(qNo / b))
     function priceYes(Market storage m) internal view returns (int128) {
         int128 uYes = ABDKMath64x64.div(m.qYes, m.b);
-        int128 uNo  = ABDKMath64x64.div(m.qNo, m.b);
+        int128 uNo = ABDKMath64x64.div(m.qNo, m.b);
 
         int128 eYes = ABDKMath64x64.exp(uYes);
-        int128 eNo  = ABDKMath64x64.exp(uNo);
+        int128 eNo = ABDKMath64x64.exp(uNo);
         int128 denom = ABDKMath64x64.add(eYes, eNo);
         return ABDKMath64x64.div(eYes, denom);
     }
@@ -246,10 +303,10 @@ contract LMSRMarket is ERC1155, ReentrancyGuard, Ownable {
     // Price of No: pNo = exp(qNo / b) / (exp(qYes / b) + exp(qNo / b))
     function priceNo(Market storage m) internal view returns (int128) {
         int128 uYes = ABDKMath64x64.div(m.qYes, m.b);
-        int128 uNo  = ABDKMath64x64.div(m.qNo, m.b);
+        int128 uNo = ABDKMath64x64.div(m.qNo, m.b);
 
         int128 eYes = ABDKMath64x64.exp(uYes);
-        int128 eNo  = ABDKMath64x64.exp(uNo);
+        int128 eNo = ABDKMath64x64.exp(uNo);
         int128 denom = ABDKMath64x64.add(eYes, eNo);
         return ABDKMath64x64.div(eNo, denom);
     }
@@ -259,10 +316,12 @@ contract LMSRMarket is ERC1155, ReentrancyGuard, Ownable {
     function getPriceYes(uint256 marketId) external view returns (uint256) {
         Market storage m = markets[marketId];
         require(m.state == MarketState.Active, "market not active");
-        
+
         int128 priceFixed = priceYes(m);
         // Convert from 64.64 fixed point to percentage (0-10000 basis points)
-        uint256 priceBps = ABDKMath64x64.toUInt(ABDKMath64x64.mul(priceFixed, ABDKMath64x64.fromInt(10000)));
+        uint256 priceBps = ABDKMath64x64.toUInt(
+            ABDKMath64x64.mul(priceFixed, ABDKMath64x64.fromInt(10000))
+        );
         return priceBps;
     }
 
@@ -270,26 +329,34 @@ contract LMSRMarket is ERC1155, ReentrancyGuard, Ownable {
     function getPriceNo(uint256 marketId) external view returns (uint256) {
         Market storage m = markets[marketId];
         require(m.state == MarketState.Active, "market not active");
-        
+
         int128 priceFixed = priceNo(m);
         // Convert from 64.64 fixed point to percentage (0-10000 basis points)
-        uint256 priceBps = ABDKMath64x64.toUInt(ABDKMath64x64.mul(priceFixed, ABDKMath64x64.fromInt(10000)));
+        uint256 priceBps = ABDKMath64x64.toUInt(
+            ABDKMath64x64.mul(priceFixed, ABDKMath64x64.fromInt(10000))
+        );
         return priceBps;
     }
 
     /// @notice Get market information
-    function getMarketInfo(uint256 marketId) external view returns (
-        address creator,
-        address collateral,
-        uint8 collateralDecimals,
-        int128 b,
-        int128 qYes,
-        int128 qNo,
-        MarketState state,
-        uint8 outcome,
-        uint256 feeBps,
-        uint256 escrow
-    ) {
+    function getMarketInfo(
+        uint256 marketId
+    )
+        external
+        view
+        returns (
+            address creator,
+            address collateral,
+            uint8 collateralDecimals,
+            int128 b,
+            int128 qYes,
+            int128 qNo,
+            MarketState state,
+            uint8 outcome,
+            uint256 feeBps,
+            uint256 escrow
+        )
+    {
         Market storage m = markets[marketId];
         return (
             m.creator,
@@ -306,7 +373,11 @@ contract LMSRMarket is ERC1155, ReentrancyGuard, Ownable {
     }
 
     /// @notice Calculate cost to buy a specific amount of shares
-    function getBuyCost(uint256 marketId, uint8 side, uint256 shareAmount) external view returns (uint256 cost) {
+    function getBuyCost(
+        uint256 marketId,
+        uint8 side,
+        uint256 shareAmount
+    ) external view returns (uint256 cost) {
         require(side == 0 || side == 1, "invalid side");
         Market storage m = markets[marketId];
         require(m.state == MarketState.Active, "market not active");
@@ -316,7 +387,7 @@ contract LMSRMarket is ERC1155, ReentrancyGuard, Ownable {
         int128 cBefore = _cost(m, m.qYes, m.qNo);
 
         int128 newQYes = m.qYes;
-        int128 newQNo  = m.qNo;
+        int128 newQNo = m.qNo;
         if (side == 0) {
             newQYes = ABDKMath64x64.add(newQYes, delta);
         } else {
@@ -329,7 +400,11 @@ contract LMSRMarket is ERC1155, ReentrancyGuard, Ownable {
     }
 
     /// @notice Calculate refund for selling a specific amount of shares
-    function getSellRefund(uint256 marketId, uint8 side, uint256 shareAmount) external view returns (uint256 refund) {
+    function getSellRefund(
+        uint256 marketId,
+        uint8 side,
+        uint256 shareAmount
+    ) external view returns (uint256 refund) {
         require(side == 0 || side == 1, "invalid side");
         Market storage m = markets[marketId];
         require(m.state == MarketState.Active, "market not active");
@@ -339,7 +414,7 @@ contract LMSRMarket is ERC1155, ReentrancyGuard, Ownable {
         int128 cBefore = _cost(m, m.qYes, m.qNo);
 
         int128 newQYes = m.qYes;
-        int128 newQNo  = m.qNo;
+        int128 newQNo = m.qNo;
         if (side == 0) {
             newQYes = ABDKMath64x64.sub(newQYes, delta);
         } else {
@@ -356,7 +431,11 @@ contract LMSRMarket is ERC1155, ReentrancyGuard, Ownable {
     /// @param marketId id
     /// @param side 0 = Yes, 1 = No
     /// @param shareAmount raw integer representing desired shares (assume 1e18 units)
-    function buy(uint256 marketId, uint8 side, uint256 shareAmount) external nonReentrant {
+    function buy(
+        uint256 marketId,
+        uint8 side,
+        uint256 shareAmount
+    ) external nonReentrant {
         require(side == 0 || side == 1, "invalid side");
         Market storage m = markets[marketId];
         require(m.state == MarketState.Active, "market not active");
@@ -370,7 +449,7 @@ contract LMSRMarket is ERC1155, ReentrancyGuard, Ownable {
 
         // new q values
         int128 newQYes = m.qYes;
-        int128 newQNo  = m.qNo;
+        int128 newQNo = m.qNo;
         if (side == 0) {
             newQYes = ABDKMath64x64.add(newQYes, delta);
         } else {
@@ -406,7 +485,7 @@ contract LMSRMarket is ERC1155, ReentrancyGuard, Ownable {
 
         // update qYes/qNo
         m.qYes = newQYes;
-        m.qNo  = newQNo;
+        m.qNo = newQNo;
 
         // fee handling: send fee to creator for now
         if (fee > 0) {
@@ -417,7 +496,11 @@ contract LMSRMarket is ERC1155, ReentrancyGuard, Ownable {
     }
 
     /// @notice Sell back shares to the AMM (burn shares, receive collateral)
-    function sell(uint256 marketId, uint8 side, uint256 shareAmount) external nonReentrant {
+    function sell(
+        uint256 marketId,
+        uint8 side,
+        uint256 shareAmount
+    ) external nonReentrant {
         require(side == 0 || side == 1, "invalid side");
         Market storage m = markets[marketId];
         require(m.state == MarketState.Active, "market not active");
@@ -433,7 +516,7 @@ contract LMSRMarket is ERC1155, ReentrancyGuard, Ownable {
         // compute refund = cost(before) - cost(after) where after = q - delta
         int128 cBefore = _cost(m, m.qYes, m.qNo);
         int128 newQYes = m.qYes;
-        int128 newQNo  = m.qNo;
+        int128 newQNo = m.qNo;
         if (side == 0) {
             newQYes = ABDKMath64x64.sub(newQYes, delta);
         } else {
@@ -441,7 +524,7 @@ contract LMSRMarket is ERC1155, ReentrancyGuard, Ownable {
         }
         int128 cAfter = _cost(m, newQYes, newQNo);
         int128 refundFixed = ABDKMath64x64.sub(cBefore, cAfter);
-        
+
         // Convert refund back to token units using proper decimal scaling
         uint256 refund = _fromFixed(refundFixed, m.collateralDecimals);
 
@@ -451,7 +534,7 @@ contract LMSRMarket is ERC1155, ReentrancyGuard, Ownable {
 
         // update q's
         m.qYes = newQYes;
-        m.qNo  = newQNo;
+        m.qNo = newQNo;
 
         emit Sold(marketId, msg.sender, side, shareAmount, refund);
     }
@@ -462,7 +545,10 @@ contract LMSRMarket is ERC1155, ReentrancyGuard, Ownable {
         require(outcome == 1 || outcome == 2, "invalid outcome");
         Market storage m = markets[marketId];
         require(m.state == MarketState.Active, "not active");
-        require(msg.sender == m.creator || msg.sender == owner(), "not authorized");
+        require(
+            msg.sender == m.creator || msg.sender == owner(),
+            "not authorized"
+        );
         m.state = MarketState.Resolved;
         m.outcome = outcome;
 
@@ -498,8 +584,14 @@ contract LMSRMarket is ERC1155, ReentrancyGuard, Ownable {
     /// @notice Withdraw leftover escrow after resolution (only creator)
     function withdrawEscrow(uint256 marketId) external nonReentrant {
         Market storage m = markets[marketId];
-        require(m.state == MarketState.Resolved || m.state == MarketState.Cancelled, "market not finished");
-        require(msg.sender == m.creator || msg.sender == owner(), "not authorized");
+        require(
+            m.state == MarketState.Resolved || m.state == MarketState.Cancelled,
+            "market not finished"
+        );
+        require(
+            msg.sender == m.creator || msg.sender == owner(),
+            "not authorized"
+        );
         uint256 amount = m.escrow;
         require(amount > 0, "nothing");
         m.escrow = 0;
@@ -509,10 +601,13 @@ contract LMSRMarket is ERC1155, ReentrancyGuard, Ownable {
     // Emergency: cancel market and allow proportional refunds
     function cancelMarket(uint256 marketId) external nonReentrant {
         Market storage m = markets[marketId];
-        require(msg.sender == m.creator || msg.sender == owner(), "not authorized");
+        require(
+            msg.sender == m.creator || msg.sender == owner(),
+            "not authorized"
+        );
         require(m.state == MarketState.Active, "not active");
         m.state = MarketState.Cancelled;
-        
+
         emit MarketCancelled(marketId);
     }
 
@@ -523,10 +618,10 @@ contract LMSRMarket is ERC1155, ReentrancyGuard, Ownable {
 
         uint256 yesTokenId = _yesId(marketId);
         uint256 noTokenId = _noId(marketId);
-        
+
         uint256 yesBalance = balanceOf(msg.sender, yesTokenId);
         uint256 noBalance = balanceOf(msg.sender, noTokenId);
-        
+
         require(yesBalance > 0 || noBalance > 0, "no shares");
 
         uint256 totalRefund = 0;
@@ -535,24 +630,26 @@ contract LMSRMarket is ERC1155, ReentrancyGuard, Ownable {
         if (yesBalance > 0) {
             // Simple proportional refund: user gets back their share of escrow
             // This is a simplified approach - in production you might want more sophisticated logic
-            uint256 yesRefund = (m.escrow * yesBalance) / (yesBalance + noBalance);
+            uint256 yesRefund = (m.escrow * yesBalance) /
+                (yesBalance + noBalance);
             totalRefund += yesRefund;
-            
+
             _burn(msg.sender, yesTokenId, yesBalance);
         }
 
         // Calculate proportional refund for No shares
         if (noBalance > 0) {
             // Simple proportional refund: user gets back their share of escrow
-            uint256 noRefund = (m.escrow * noBalance) / (yesBalance + noBalance);
+            uint256 noRefund = (m.escrow * noBalance) /
+                (yesBalance + noBalance);
             totalRefund += noRefund;
-            
+
             _burn(msg.sender, noTokenId, noBalance);
         }
 
         require(totalRefund > 0, "no refund");
         require(m.escrow >= totalRefund, "insufficient escrow");
-        
+
         m.escrow -= totalRefund;
         m.collateral.safeTransfer(msg.sender, totalRefund);
 
