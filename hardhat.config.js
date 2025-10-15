@@ -1,6 +1,7 @@
-import type { HardhatUserConfig } from "hardhat/config";
+require("@nomicfoundation/hardhat-toolbox");
 
-const config: HardhatUserConfig = {
+/** @type import('hardhat/config').HardhatUserConfig */
+module.exports = {
   solidity: {
     version: "0.8.28",
     settings: {
@@ -12,10 +13,10 @@ const config: HardhatUserConfig = {
   },
   networks: {
     hardhat: {
-      type: "edr-simulated",
-      chainType: "l1",
+      chainId: 1337,
     },
   },
+  mocha: {
+    timeout: 40000,
+  },
 };
-
-export default config;

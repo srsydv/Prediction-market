@@ -15,7 +15,6 @@
   "keywords": [],
   "author": "",
   "license": "ISC",
-  "type": "module",
   "bugs": {
     "url": "https://github.com/srsydv/Prediction-market/issues"
   },
@@ -24,20 +23,25 @@
     "@openzeppelin/contracts": "^5.4.0"
   },
   "devDependencies": {
-    "@nomicfoundation/hardhat-chai-matchers": "^2.1.0",
-    "@nomicfoundation/hardhat-ignition": "^3.0.3",
-    "@nomicfoundation/hardhat-network-helpers": "^3.0.1",
-    "@nomicfoundation/hardhat-toolbox": "^6.1.0",
-    "@nomicfoundation/hardhat-verify": "^3.0.3",
+    "@nomicfoundation/hardhat-chai-matchers": "^1.0.6",
+    "@nomicfoundation/hardhat-network-helpers": "^1.1.0",
+    "@nomicfoundation/hardhat-toolbox": "^2.0.2",
+    "@nomiclabs/hardhat-ethers": "^2.2.3",
+    "@nomiclabs/hardhat-etherscan": "^3.1.8",
+    "@typechain/ethers-v5": "^10.2.1",
+    "@typechain/hardhat": "^6.1.6",
     "@types/chai": "^4.3.20",
-    "@types/chai-as-promised": "^8.0.2",
-    "@types/mocha": "^10.0.10",
-    "@types/node": "^22.18.10",
-    "chai": "^5.3.3",
-    "ethers": "^6.15.0",
+    "@types/mocha": "^9.1.1",
+    "@types/node": "^12.20.55",
+    "chai": "^4.5.0",
+    "ethers": "^5.8.0",
     "forge-std": "github:foundry-rs/forge-std#v1.9.4",
-    "hardhat": "^3.0.7",
-    "mocha": "^11.7.4",
-    "typescript": "~5.8.0"
+    "hardhat": "^2.26.3",
+    "hardhat-gas-reporter": "^1.0.10",
+    "mocha": "^10.8.2",
+    "solidity-coverage": "^0.8.16",
+    "ts-node": "^8.10.2",
+    "typechain": "^8.3.2",
+    "typescript": "^4.9.5"
   }
 }

@@ -21,12 +21,12 @@ library ABDKMath64x64 {
 
     function fromUInt(uint256 x) internal pure returns (int128) {
         require(x <= 0x7FFFFFFFFFFFFFFF);
-        return int128(int256(x << 64));
+        return int128(int256(x) << 64);
     }
 
-    function toUInt(int128 x) internal pure returns (uint64) {
+    function toUInt(int128 x) internal pure returns (uint256) {
         require(x >= 0);
-        return uint64(uint128(x >> 64));
+        return uint256(uint128(x >> 64));
     }
 
     function add(int128 x, int128 y) internal pure returns (int128) {
