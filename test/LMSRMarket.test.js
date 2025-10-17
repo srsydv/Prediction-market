@@ -145,7 +145,8 @@ describe("LMSRMarket", function () {
     it("Should return initial prices (50/50)", async function () {
       const priceYes = await lmsrMarket.getPriceYes(0);
       const priceNo = await lmsrMarket.getPriceNo(0);
-      
+      console.log("priceYes", priceYes);
+      console.log("priceNo", priceNo);
       // Initial prices should be close to 50% each (5000 basis points)
       expect(priceYes).to.be.closeTo(ethers.utils.parseEther("0.5"), ethers.utils.parseEther("0.1"));
       expect(priceNo).to.be.closeTo(ethers.utils.parseEther("0.5"), ethers.utils.parseEther("0.1"));
@@ -178,7 +179,8 @@ describe("LMSRMarket", function () {
     it("Should calculate buy cost for Yes shares", async function () {
       const shareAmount = ethers.utils.parseUnits("100", 6); // 100 USDC worth of shares
       const cost = await lmsrMarket.getBuyCost(0, 0, shareAmount);
-      
+      console.log("cost", cost);
+      console.log("shareAmount", shareAmount);
       expect(cost).to.be.gt(0);
       expect(cost).to.be.equal(shareAmount); // With simplified model, cost equals share amount
     });
@@ -199,6 +201,8 @@ describe("LMSRMarket", function () {
       // Then calculate refund
       const refund = await lmsrMarket.getSellRefund(0, 0, shareAmount);
       expect(refund).to.be.gt(0);
+      console.log("refund", refund);
+      console.log("shareAmount", shareAmount);
     });
 
     it("Should fail with invalid side parameter", async function () {
@@ -228,37 +232,132 @@ describe("LMSRMarket", function () {
       );
     });
 
-    it("Should buy Yes shares successfully", async function () {
-      const shareAmount = ethers.utils.parseUnits("100", 6);
-      const cost = await lmsrMarket.getBuyCost(0, 0, shareAmount);
-      const fee = cost.mul(50).div(10000); // 0.5% fee
-      const total = cost.add(fee);
+    it("Should accumulate shares across multiple purchases (real-world scenario)", async function () {
+      const yesTokenId = await lmsrMarket._yesId(0);
       
-      const tx = await lmsrMarket.connect(user1).buy(0, 0, shareAmount);
+      // First purchase: 100 USDC worth of Yes shares
+      const firstAmount = ethers.utils.parseUnits("100", 6);
+      const firstCost = await lmsrMarket.getBuyCost(0, 0, firstAmount);
+      const firstFee = firstCost.mul(50).div(10000); // 0.5% fee
       
-      await expect(tx)
+      const tx1 = await lmsrMarket.connect(user1).buy(0, 0, firstAmount);
+      
+      await expect(tx1)
         .to.emit(lmsrMarket, "Bought")
-        .withArgs(0, user1.address, 0, shareAmount, cost, fee);
+        .withArgs(0, user1.address, 0, firstAmount, firstCost, firstFee);
       
-      // Check user has shares
-      const yesTokenId = await lmsrMarket._yesId(0);
-      expect(await lmsrMarket.balanceOf(user1.address, yesTokenId)).to.equal(shareAmount);
+      // Check balance after first purchase
+      let balance = await lmsrMarket.balanceOf(user1.address, yesTokenId);
+      expect(balance).to.equal(firstAmount);
+      console.log("After first purchase (100 USDC):");
+      console.log("  Raw balance:", balance.toString());
+      console.log("  Human readable:", ethers.utils.formatUnits(balance, 6), "USDC");
+      
+      // Second purchase: 50 USDC worth of Yes shares (should accumulate)
+      const secondAmount = ethers.utils.parseUnits("50", 6);
+      const secondCost = await lmsrMarket.getBuyCost(0, 0, secondAmount);
+      const secondFee = secondCost.mul(50).div(10000); // 0.5% fee
+      
+      const tx2 = await lmsrMarket.connect(user1).buy(0, 0, secondAmount);
+      
+      await expect(tx2)
+        .to.emit(lmsrMarket, "Bought")
+        .withArgs(0, user1.address, 0, secondAmount, secondCost, secondFee);
+      
+      // Check cumulative balance after second purchase
+      balance = await lmsrMarket.balanceOf(user1.address, yesTokenId);
+      const expectedTotal = firstAmount.add(secondAmount);
+      expect(balance).to.equal(expectedTotal);
+      
+      console.log("After second purchase (50 USDC):");
+      console.log("  Raw balance:", balance.toString());
+      console.log("  Human readable:", ethers.utils.formatUnits(balance, 6), "USDC");
+      console.log("  Expected total:", ethers.utils.formatUnits(expectedTotal, 6), "USDC");
+      
+      // Third purchase: 25 USDC worth of Yes shares (should accumulate further)
+      const thirdAmount = ethers.utils.parseUnits("25", 6);
+      const thirdCost = await lmsrMarket.getBuyCost(0, 0, thirdAmount);
+      const thirdFee = thirdCost.mul(50).div(10000); // 0.5% fee
+      
+      const tx3 = await lmsrMarket.connect(user1).buy(0, 0, thirdAmount);
+      
+      await expect(tx3)
+        .to.emit(lmsrMarket, "Bought")
+        .withArgs(0, user1.address, 0, thirdAmount, thirdCost, thirdFee);
+      
+      // Check final cumulative balance
+      balance = await lmsrMarket.balanceOf(user1.address, yesTokenId);
+      const finalExpectedTotal = firstAmount.add(secondAmount).add(thirdAmount);
+      expect(balance).to.equal(finalExpectedTotal);
+      
+      console.log("After third purchase (25 USDC):");
+      console.log("  Raw balance:", balance.toString());
+      console.log("  Human readable:", ethers.utils.formatUnits(balance, 6), "USDC");
+      console.log("  Expected total:", ethers.utils.formatUnits(finalExpectedTotal, 6), "USDC");
+      
+      // Summary: 100 + 50 + 25 = 175 USDC worth of shares
+      console.log("Total shares accumulated: 175 USDC");
     });
 
-    it("Should buy Yes shares with small amount", async function () {
-      const amount = ethers.utils.parseUnits("50", 6);
-      await lmsrMarket.connect(user1).buy(0, 0, amount);
-      
-      const yesTokenId = await lmsrMarket._yesId(0);
-      expect(await lmsrMarket.balanceOf(user1.address, yesTokenId)).to.equal(amount);
-    });
-
-    it("Should buy Yes shares with large amount", async function () {
+    it("Should buy Yes shares with single large amount", async function () {
       const amount = ethers.utils.parseUnits("500", 6);
       await lmsrMarket.connect(user2).buy(0, 0, amount);
       
       const yesTokenId = await lmsrMarket._yesId(0);
       expect(await lmsrMarket.balanceOf(user2.address, yesTokenId)).to.equal(amount);
+      console.log("Single large purchase:");
+      console.log("  Raw amount:", amount.toString());
+      console.log("  Human readable:", ethers.utils.formatUnits(amount, 6), "USDC");
+    });
+
+    it("Should handle mixed Yes/No purchases (real-world trading scenario)", async function () {
+      const yesTokenId = await lmsrMarket._yesId(0);
+      const noTokenId = await lmsrMarket._noId(0);
+      
+      // User starts by buying 200 USDC worth of Yes shares
+      const yesAmount1 = ethers.utils.parseUnits("200", 6);
+      await lmsrMarket.connect(user1).buy(0, 0, yesAmount1);
+      
+      let yesBalance = await lmsrMarket.balanceOf(user1.address, yesTokenId);
+      let noBalance = await lmsrMarket.balanceOf(user1.address, noTokenId);
+      
+      console.log("After buying 200 USDC Yes shares:");
+      console.log("  Yes balance:", ethers.utils.formatUnits(yesBalance, 6), "USDC");
+      console.log("  No balance:", ethers.utils.formatUnits(noBalance, 6), "USDC");
+      
+      // User then buys 100 USDC worth of No shares (hedging their position)
+      const noAmount1 = ethers.utils.parseUnits("100", 6);
+      await lmsrMarket.connect(user1).buy(0, 1, noAmount1);
+      
+      yesBalance = await lmsrMarket.balanceOf(user1.address, yesTokenId);
+      noBalance = await lmsrMarket.balanceOf(user1.address, noTokenId);
+      
+      console.log("After buying 100 USDC No shares:");
+      console.log("  Yes balance:", ethers.utils.formatUnits(yesBalance, 6), "USDC");
+      console.log("  No balance:", ethers.utils.formatUnits(noBalance, 6), "USDC");
+      
+      // User adds more Yes shares (doubling down)
+      const yesAmount2 = ethers.utils.parseUnits("150", 6);
+      await lmsrMarket.connect(user1).buy(0, 0, yesAmount2);
+      
+      yesBalance = await lmsrMarket.balanceOf(user1.address, yesTokenId);
+      noBalance = await lmsrMarket.balanceOf(user1.address, noTokenId);
+      
+      console.log("After buying additional 150 USDC Yes shares:");
+      console.log("  Yes balance:", ethers.utils.formatUnits(yesBalance, 6), "USDC");
+      console.log("  No balance:", ethers.utils.formatUnits(noBalance, 6), "USDC");
+      
+      // Verify final balances
+      const expectedYesTotal = yesAmount1.add(yesAmount2);
+      const expectedNoTotal = noAmount1;
+      
+      expect(yesBalance).to.equal(expectedYesTotal);
+      expect(noBalance).to.equal(expectedNoTotal);
+      
+      console.log("Final portfolio:");
+      console.log("  Total Yes shares:", ethers.utils.formatUnits(expectedYesTotal, 6), "USDC");
+      console.log("  Total No shares:", ethers.utils.formatUnits(expectedNoTotal, 6), "USDC");
+      console.log("  Net position: +", ethers.utils.formatUnits(expectedYesTotal.sub(expectedNoTotal), 6), "USDC Yes");
     });
   });
 
