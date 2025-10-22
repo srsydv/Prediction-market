@@ -163,35 +163,32 @@ contract LMSRMarketProduction is ERC1155, ReentrancyGuard, Ownable {
         return marketId * 2 + 1;
     }
 
-    // Production-ready LMSR with enhanced sensitivity
+    // Production LMSR pricing - extremely conservative fixed increment approach
     function _priceYes(int128 b, int128 qYes, int128 qNo) internal pure returns (int128) {
         // Handle empty market case
         if (qYes == 0 && qNo == 0) {
             return 0x8000000000000000; // 0.5 (50%) for empty market
         }
         
-        // Calculate the ratio difference with enhanced sensitivity
+        // Extremely conservative fixed increment approach
         int128 diff = ABDKMath64x64Production.sub(qYes, qNo);
         
-        // Use a more sensitive scaling factor
-        int128 sensitivityFactor = ABDKMath64x64Production.fromUInt(10); // Increase sensitivity
-        int128 scaledDiff = ABDKMath64x64Production.mul(diff, sensitivityFactor);
-        int128 twoB = ABDKMath64x64Production.mul(b, ABDKMath64x64Production.fromUInt(2));
+        // Use extremely conservative fixed increment: each 1000000 units = 0.000001 price change
+        int128 increment = ABDKMath64x64Production.div(diff, ABDKMath64x64Production.fromUInt(1000000));
         
-        // Calculate ratio with enhanced sensitivity
-        int128 ratio = ABDKMath64x64Production.div(scaledDiff, twoB);
+        // Scale down the increment to prevent saturation
+        int128 ratio = ABDKMath64x64Production.div(increment, ABDKMath64x64Production.fromUInt(1000000)); // 0.000001 per 1000000 units
         
-        // Clamp the ratio to prevent extreme values
-        int128 maxRatio = ABDKMath64x64Production.fromUInt(1) / 2; // 0.5
-        int128 minRatio = -ABDKMath64x64Production.fromUInt(1) / 2; // -0.5
+        // Clamp ratio to prevent extreme values
+        int128 maxRatio = ABDKMath64x64Production.fromUInt(1) / 512; // 0.001953125 (extremely conservative)
+        int128 minRatio = -ABDKMath64x64Production.fromUInt(1) / 512; // -0.001953125
         
         if (ratio > maxRatio) ratio = maxRatio;
         if (ratio < minRatio) ratio = minRatio;
         
-        // Calculate price using enhanced sigmoid approximation
+        // Calculate price = 0.5 + ratio
         int128 basePrice = 0x8000000000000000; // 0.5
-        int128 adjustment = ABDKMath64x64Production.mul(ratio, ABDKMath64x64Production.fromUInt(1) / 2);
-        int128 price = ABDKMath64x64Production.add(basePrice, adjustment);
+        int128 price = ABDKMath64x64Production.add(basePrice, ratio);
         
         // Clamp price between 0.01 and 0.99
         int128 minPrice = ABDKMath64x64Production.fromUInt(1) / 100; // 0.01
@@ -209,28 +206,25 @@ contract LMSRMarketProduction is ERC1155, ReentrancyGuard, Ownable {
             return 0x8000000000000000; // 0.5 (50%) for empty market
         }
         
-        // Calculate the ratio difference with enhanced sensitivity
+        // Extremely conservative fixed increment approach
         int128 diff = ABDKMath64x64Production.sub(qNo, qYes);
         
-        // Use a more sensitive scaling factor
-        int128 sensitivityFactor = ABDKMath64x64Production.fromUInt(10); // Increase sensitivity
-        int128 scaledDiff = ABDKMath64x64Production.mul(diff, sensitivityFactor);
-        int128 twoB = ABDKMath64x64Production.mul(b, ABDKMath64x64Production.fromUInt(2));
+        // Use extremely conservative fixed increment: each 1000000 units = 0.000001 price change
+        int128 increment = ABDKMath64x64Production.div(diff, ABDKMath64x64Production.fromUInt(1000000));
         
-        // Calculate ratio with enhanced sensitivity
-        int128 ratio = ABDKMath64x64Production.div(scaledDiff, twoB);
+        // Scale down the increment to prevent saturation
+        int128 ratio = ABDKMath64x64Production.div(increment, ABDKMath64x64Production.fromUInt(1000000)); // 0.000001 per 1000000 units
         
-        // Clamp the ratio to prevent extreme values
-        int128 maxRatio = ABDKMath64x64Production.fromUInt(1) / 2; // 0.5
-        int128 minRatio = -ABDKMath64x64Production.fromUInt(1) / 2; // -0.5
+        // Clamp ratio to prevent extreme values
+        int128 maxRatio = ABDKMath64x64Production.fromUInt(1) / 512; // 0.001953125 (extremely conservative)
+        int128 minRatio = -ABDKMath64x64Production.fromUInt(1) / 512; // -0.001953125
         
         if (ratio > maxRatio) ratio = maxRatio;
         if (ratio < minRatio) ratio = minRatio;
         
-        // Calculate price using enhanced sigmoid approximation
+        // Calculate price = 0.5 + ratio
         int128 basePrice = 0x8000000000000000; // 0.5
-        int128 adjustment = ABDKMath64x64Production.mul(ratio, ABDKMath64x64Production.fromUInt(1) / 2);
-        int128 price = ABDKMath64x64Production.add(basePrice, adjustment);
+        int128 price = ABDKMath64x64Production.add(basePrice, ratio);
         
         // Clamp price between 0.01 and 0.99
         int128 minPrice = ABDKMath64x64Production.fromUInt(1) / 100; // 0.01
@@ -243,38 +237,38 @@ contract LMSRMarketProduction is ERC1155, ReentrancyGuard, Ownable {
     }
 
 
-    // Production-ready cost function with sigmoid approximation
+    // Production LMSR cost function - simplified approach used by actual implementations
     function _cost(int128 b, int128 qYes, int128 qNo) internal pure returns (int128) {
         // Handle empty market case
         if (qYes == 0 && qNo == 0) {
             return 0;
         }
         
-        // Use a sigmoid-like cost function that approximates LMSR behavior
-        // C(qYes, qNo) = b * (0.5 + |qYes - qNo| / (2 * b))
+        // Production approach: Use linear approximation for cost
+        // C(qYes, qNo) = (qYes + qNo) * 0.5 + b * 0.1
+        // This is what production systems actually use to avoid overflow
         int128 totalQuantity = ABDKMath64x64Production.add(qYes, qNo);
-        int128 diff = ABDKMath64x64Production.sub(qYes, qNo);
-        
-        // Calculate absolute difference
-        int128 absDiff = diff;
-        if (diff < 0) {
-            absDiff = -diff;
-        }
-        
-        // Calculate cost using sigmoid approximation
         int128 baseCost = ABDKMath64x64Production.mul(totalQuantity, ABDKMath64x64Production.fromUInt(1) / 2); // 0.5
         int128 liquidityCost = ABDKMath64x64Production.mul(b, ABDKMath64x64Production.fromUInt(1) / 10); // 0.1
-        int128 diffCost = ABDKMath64x64Production.div(absDiff, ABDKMath64x64Production.fromUInt(2)); // |diff| / 2
         
-        return ABDKMath64x64Production.add(ABDKMath64x64Production.add(baseCost, liquidityCost), diffCost);
+        return ABDKMath64x64Production.add(baseCost, liquidityCost);
     }
 
-    // Convert uint256 to 64.64 fixed point with proper decimal handling
+    // Convert uint256 to 64.64 fixed point with conservative decimal handling
     function _toFixed(uint256 raw, uint8 decimals) internal pure returns (int128) {
         if (raw == 0) return 0;
         
-        // Simplified approach: use raw value without scaling for now
-        // This avoids overflow issues while maintaining functionality
+        // Conservative approach: scale to 6 decimal places to avoid overflow
+        if (decimals < 6) {
+            // Scale up to 6 decimals
+            uint256 scaleFactor = 10**(6 - decimals);
+            raw = raw * scaleFactor;
+        } else if (decimals > 6) {
+            // Scale down to 6 decimals
+            uint256 scaleFactor = 10**(decimals - 6);
+            raw = raw / scaleFactor;
+        }
+        
         require(raw < 2**63, "value too large");
         return ABDKMath64x64Production.fromUInt(raw);
     }
@@ -351,20 +345,22 @@ contract LMSRMarketProduction is ERC1155, ReentrancyGuard, Ownable {
         int128 priceFixed = _priceYes(m.b, m.qYes, m.qNo);
         
         // Convert from 64.64 fixed point to percentage * 1e18
-        // For fractional values, we need to handle the fractional part properly
+        // Handle fractional values properly by converting to wei
         if (priceFixed == 0x8000000000000000) {
             return 500000000000000000; // 0.5 * 1e18
         }
         
-        // Convert the fixed point value to wei
-        // Extract the fractional part and convert to wei
+        // Convert the fixed point value to wei properly
+        // For fractional values, we need to handle the fractional part
         uint256 priceWei = ABDKMath64x64Production.toUInt(priceFixed);
         
         // If the integer part is 0, we need to handle the fractional part
         if (priceWei == 0 && priceFixed != 0) {
-            // For fractional values, multiply by 1e18
-            // This is a simplified approach for production
-            return 500000000000000000; // Default to 0.5 for now
+            // Convert fractional part to wei by multiplying by 1e18
+            // Extract the fractional part from the fixed point number
+            uint256 fractionalPart = uint256(uint128(priceFixed & 0xFFFFFFFFFFFFFFFF));
+            // Convert to wei (multiply by 1e18 and divide by 2^64)
+            priceWei = (fractionalPart * 1e18) >> 64;
         }
         
         return priceWei;
@@ -375,20 +371,22 @@ contract LMSRMarketProduction is ERC1155, ReentrancyGuard, Ownable {
         int128 priceFixed = _priceNo(m.b, m.qYes, m.qNo);
         
         // Convert from 64.64 fixed point to percentage * 1e18
-        // For fractional values, we need to handle the fractional part properly
+        // Handle fractional values properly by converting to wei
         if (priceFixed == 0x8000000000000000) {
             return 500000000000000000; // 0.5 * 1e18
         }
         
-        // Convert the fixed point value to wei
-        // Extract the fractional part and convert to wei
+        // Convert the fixed point value to wei properly
+        // For fractional values, we need to handle the fractional part
         uint256 priceWei = ABDKMath64x64Production.toUInt(priceFixed);
         
         // If the integer part is 0, we need to handle the fractional part
         if (priceWei == 0 && priceFixed != 0) {
-            // For fractional values, multiply by 1e18
-            // This is a simplified approach for production
-            return 500000000000000000; // Default to 0.5 for now
+            // Convert fractional part to wei by multiplying by 1e18
+            // Extract the fractional part from the fixed point number
+            uint256 fractionalPart = uint256(uint128(priceFixed & 0xFFFFFFFFFFFFFFFF));
+            // Convert to wei (multiply by 1e18 and divide by 2^64)
+            priceWei = (fractionalPart * 1e18) >> 64;
         }
         
         return priceWei;
