@@ -280,13 +280,18 @@ contract LMSRMarketProduction is ERC1155, ReentrancyGuard, Ownable {
         // Convert from 64.64 fixed point to uint256
         uint256 scaled = ABDKMath64x64Production.toUInt(fixedPoint);
         
-        // Adjust for target decimals
-        if (decimals <= 18) {
-            uint256 scaleFactor = 10 ** (18 - decimals);
+        // Adjust for target decimals - simplified approach
+        if (decimals < 6) {
+            // Scale down to target decimals
+            uint256 scaleFactor = 10 ** (6 - decimals);
             return scaled / scaleFactor;
-        } else {
-            uint256 scaleFactor = 10 ** (decimals - 18);
+        } else if (decimals > 6) {
+            // Scale up to target decimals
+            uint256 scaleFactor = 10 ** (decimals - 6);
             return scaled * scaleFactor;
+        } else {
+            // Same decimals, return as is
+            return scaled;
         }
     }
 
