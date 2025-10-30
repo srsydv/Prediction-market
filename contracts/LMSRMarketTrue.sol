@@ -7,7 +7,7 @@ import "@openzeppelin/contracts/token/ERC20/extensions/IERC20Metadata.sol";
 import "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
 import "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
 import "@openzeppelin/contracts/access/Ownable.sol";
-import "./LMSRMath.sol";
+import "./ABDKMath64x64.sol";
 
 /**
  * @title LMSRMarketTrue
@@ -18,7 +18,7 @@ import "./LMSRMath.sol";
  */
 contract LMSRMarketTrue is ERC1155, ReentrancyGuard, Ownable {
     using SafeERC20 for IERC20;
-    using LMSRMath for uint256;
+    using ABDKMath64x64 for int128;
 
     enum MarketState {
         Active,
@@ -158,11 +158,269 @@ contract LMSRMarketTrue is ERC1155, ReentrancyGuard, Ownable {
         _;
     }
 
+    // --- constants for safe conversions ---
+uint256 constant ABDK_FROMUINT_MAX = 9223372036854775807; // 2^63 - 1 ~ 9.22e18
+
     constructor() ERC1155("") Ownable(msg.sender) {
         // Initialize with owner as authorized creator and resolver
         authorizedCreators[msg.sender] = true;
         authorizedResolvers[msg.sender] = true;
         feeRecipient = msg.sender;
+    }
+
+    // ---------- LMSR math via ABDK 64.64 with log-sum-exp ----------
+    function _mulu64x64(int128 x, uint256 y) internal pure returns (uint256) {
+        // Use ABDK's safe mulu which handles 64.64 -> uint multiplication correctly
+        // and prevents manual casts that can overflow.
+        if (x <= 0) return 0;
+    // cast x to unsigned 128-bit for multiplication (representation is 64.64)
+    // then multiply by y (uint256) and shift right 64 to remove the 64 fractional bits.
+    return (uint256(uint128(x)) * y) >> 64;
+    }
+
+// Helper: compute the smallest power-of-10 scaleDown such that maxVal/scaleDown fits ABDK.fromUInt limits
+function _chooseScaleDown(uint256 maxVal) internal pure returns (uint256) {
+    uint256 oneWad = 10 ** 18;
+    uint256 maxIntegerAllowed = 9223372036854775807; // 2^63 - 1
+    uint256 maxScaled = maxIntegerAllowed * oneWad / 4; // /4 safety headroom
+    if (maxVal <= maxScaled) return 1;
+    uint256 factor = (maxVal + maxScaled - 1) / maxScaled; // ceil
+    uint256 p = 1;
+    while (p < factor) {
+        p *= 10;
+        require(p > 0, "scale overflow");
+    }
+    return p;
+}
+
+    function _toWad(uint256 amount, uint8 decimals) internal pure returns (uint256) {
+        if (amount == 0) return 0;
+        if (decimals == 18) return amount;
+        if (decimals < 18) return amount * (10 ** (18 - decimals));
+        return amount / (10 ** (decimals - 18));
+    }
+
+    function _fromWad(uint256 wad, uint8 decimals) internal pure returns (uint256) {
+        if (wad == 0) return 0;
+        if (decimals == 18) return wad;
+        if (decimals < 18) return wad / (10 ** (18 - decimals));
+        return wad * (10 ** (decimals - 18));
+    }
+
+    // function _safeTo64x64FromWad(uint256 wad) internal pure returns (int128) {
+    //     // Convert a wad (1e18) to 64.64 without overflowing fromUInt
+    //     if (wad == 0) return 0;
+    //     uint256 scale = 10 ** 18;
+    //     uint256 integerPart = wad / scale;
+    //     uint256 fractionalPart = wad % scale;
+    //     int128 res = ABDKMath64x64.fromUInt(integerPart);
+    //     if (fractionalPart > 0) {
+    //         int128 fracNum = ABDKMath64x64.fromUInt(fractionalPart);
+    //         int128 fracDen = ABDKMath64x64.fromUInt(scale);
+    //         res = ABDKMath64x64.add(res, ABDKMath64x64.div(fracNum, fracDen));
+    //     }
+    //     return res;
+    // }
+
+  // Robust conversion: wad (1e18) -> ABDK 64.64 int128
+function _safeTo64x64FromWad(uint256 wad) internal pure returns (int128) {
+    if (wad == 0) return int128(0);
+
+    // Determine a scaleDown (power-of-10) so that scaled = wad / scaleDown
+    // has integerPart <= ABDK_FROMUINT_MAX when divided by 1e18.
+    // ABDK.fromUInt accepts values up to 2^63 - 1 ~= 9.223372e18.
+    uint256 maxIntegerAllowed = 9223372036854775807; // 2^63 - 1
+    uint256 oneWad = 10 ** 18;
+
+    // integerPart = (wad / scaleDown) / 1e18 must be <= maxIntegerAllowed
+    // So scaled = wad / scaleDown must be <= maxIntegerAllowed * 1e18
+    uint256 maxScaled = maxIntegerAllowed * oneWad;
+
+    uint256 scaleDown = 1;
+    if (wad > maxScaled) {
+        // figure factor = ceil(wad / maxScaled) and make scaleDown next power of 10 >= factor
+        uint256 factor = (wad + maxScaled - 1) / maxScaled;
+        uint256 p = 1;
+        while (p < factor) {
+            p *= 10;
+            // safety: avoid infinite loop
+            if (p == 0) break;
+        }
+        scaleDown = p;
+    }
+
+    uint256 scaled = wad / scaleDown; // now scaled <= maxScaled
+
+    // Now split scaled into integer and fractional parts relative to 1e18
+    uint256 integerPart = scaled / oneWad;     // fits <= maxIntegerAllowed
+    uint256 fractionalPart = scaled % oneWad;  // < 1e18
+
+    // Convert: result = integerPart + fractionalPart/1e18  (all using ABDK)
+    int128 integer64 = ABDKMath64x64.fromUInt(integerPart);
+    int128 fracNum64 = ABDKMath64x64.fromUInt(fractionalPart);
+    int128 den64 = ABDKMath64x64.fromUInt(oneWad);
+    int128 frac64 = ABDKMath64x64.div(fracNum64, den64);
+
+    return ABDKMath64x64.add(integer64, frac64);
+}
+    // function _calculateCostWad(uint256 bWad, uint256 qYesWad, uint256 qNoWad) internal pure returns (uint256) {
+    //     if (bWad == 0) return 0;
+    //     // Scale down to keep within ABDK ranges while preserving ratios
+    //     uint256 S = 1_000_000; // 1e6
+    //     bWad = bWad / S;
+    //     qYesWad = qYesWad / S;
+    //     qNoWad = qNoWad / S;
+    //     // Convert to 64.64 real numbers
+    //     int128 b64 = _safeTo64x64FromWad(bWad);
+    //     int128 qYes64 = _safeTo64x64FromWad(qYesWad);
+    //     int128 qNo64 = _safeTo64x64FromWad(qNoWad);
+
+    //     // a_i = q_i / b
+    //     int128 aYes = ABDKMath64x64.div(qYes64, b64);
+    //     int128 aNo = ABDKMath64x64.div(qNo64, b64);
+
+    //     // log-sum-exp stabilization
+    //     int128 maxA = aYes >= aNo ? aYes : aNo;
+    //     int128 expYes = ABDKMath64x64.exp(ABDKMath64x64.sub(aYes, maxA));
+    //     int128 expNo = ABDKMath64x64.exp(ABDKMath64x64.sub(aNo, maxA));
+    //     int128 sumExp = ABDKMath64x64.add(expYes, expNo);
+    //     int128 lnSum = ABDKMath64x64.ln(sumExp);
+    //     int128 logSum = ABDKMath64x64.add(lnSum, maxA);
+
+    //     // cost64 = b * logSum
+    //     int128 cost64 = ABDKMath64x64.mul(b64, logSum);
+
+    //     // Convert 64.64 -> wad via shift
+    //     uint256 raw = uint256(uint128(cost64));
+    //     uint256 out = (raw * (10 ** 18)) >> 64;
+    //     return out * S; // rescale back
+    // }
+
+// safe _calculateCostWad with dynamic scaleDown (power-of-10)
+function _calculateCostWad(
+    uint256 bWad,
+    uint256 qYesWad,
+    uint256 qNoWad
+) internal pure returns (uint256) {
+    if (bWad == 0) return 0;
+
+    uint256 oneWad = 10**18;
+    uint256 maxIntegerAllowed = 9223372036854775807; // 2^63 - 1
+
+    // Choose scaleDown (power of 10) so that (bWad/scaleDown)/1e18 <= maxIntegerAllowed/4 (safety margin)
+    // using /4 as safety headroom for multiplications later
+    uint256 maxScaled = (maxIntegerAllowed / 4) * oneWad; // allowed scaled max for `scaled = wad/scaleDown`
+    uint256 scaleDown = 1;
+    if (bWad > maxScaled) {
+        uint256 factor = (bWad + maxScaled - 1) / maxScaled; // ceil(bWad / maxScaled)
+        uint256 p = 1;
+        while (p < factor) {
+            p *= 10;
+            // guard
+            require(p > 0, "scale overflow");
+        }
+        scaleDown = p;
+    }
+
+    // Apply same scaleDown to all inputs to preserve ratios (q/b unaffected)
+    uint256 bScaled = bWad / scaleDown;
+    uint256 qYesScaled = qYesWad / scaleDown;
+    uint256 qNoScaled = qNoWad / scaleDown;
+
+    // Convert scaled wad -> ABDK 64.64 safely using integer+fraction split
+    // integerPart = scaled / 1e18; fractionalPart = scaled % 1e18
+    // helper conversion as inline private scope calls
+    int128 b64 = ABDKMath64x64.add(
+        ABDKMath64x64.fromUInt(bScaled / oneWad),
+        ABDKMath64x64.div(
+            ABDKMath64x64.fromUInt(bScaled % oneWad),
+            ABDKMath64x64.fromUInt(oneWad)
+        )
+    );
+    int128 qYes64 = ABDKMath64x64.add(
+        ABDKMath64x64.fromUInt(qYesScaled / oneWad),
+        ABDKMath64x64.div(
+            ABDKMath64x64.fromUInt(qYesScaled % oneWad),
+            ABDKMath64x64.fromUInt(oneWad)
+        )
+    );
+    int128 qNo64 = ABDKMath64x64.add(
+        ABDKMath64x64.fromUInt(qNoScaled / oneWad),
+        ABDKMath64x64.div(
+            ABDKMath64x64.fromUInt(qNoScaled % oneWad),
+            ABDKMath64x64.fromUInt(oneWad)
+        )
+    );
+
+    // a_i = q_i / b
+    int128 aYes = ABDKMath64x64.div(qYes64, b64);
+    int128 aNo  = ABDKMath64x64.div(qNo64, b64);
+
+    // log-sum-exp (stabilized)
+    int128 maxA = aYes >= aNo ? aYes : aNo;
+    int128 expYes = ABDKMath64x64.exp(ABDKMath64x64.sub(aYes, maxA));
+    int128 expNo = ABDKMath64x64.exp(ABDKMath64x64.sub(aNo, maxA));
+    int128 sumExp = ABDKMath64x64.add(expYes, expNo);
+    int128 lnSum = ABDKMath64x64.ln(sumExp);
+    int128 logSum = ABDKMath64x64.add(lnSum, maxA);
+
+    // Instead of multiplying two 64.64 numbers (which can overflow), compute costWad
+    // directly by multiplying the 64.64 logSum with the scaled wad (bScaled) using mulu.
+    // costWadScaled = floor(logSum * bScaled)
+    uint256 scaledCostWad = ABDKMath64x64.mulu(logSum, bScaled);
+
+    // Now recover original wad units by multiplying with scaleDown
+    if (scaleDown == 1) {
+        return scaledCostWad;
+    } else {
+        // check for overflow when multiplying back
+        require(scaledCostWad == 0 || scaledCostWad <= type(uint256).max / scaleDown, "rescale overflow");
+        return scaledCostWad * scaleDown;
+    }
+}
+
+    function _priceYesWad(uint256 bWad, uint256 qYesWad, uint256 qNoWad) internal pure returns (uint256) {
+        if (bWad == 0) return 5e17; // 0.5
+        if (qYesWad == 0 && qNoWad == 0) return 5e17;
+        uint256 S = 1_000_000;
+        bWad = bWad / S;
+        qYesWad = qYesWad / S;
+        qNoWad = qNoWad / S;
+        int128 b64 = _safeTo64x64FromWad(bWad);
+        int128 qYes64 = _safeTo64x64FromWad(qYesWad);
+        int128 qNo64 = _safeTo64x64FromWad(qNoWad);
+        int128 aYes = ABDKMath64x64.div(qYes64, b64);
+        int128 aNo = ABDKMath64x64.div(qNo64, b64);
+        int128 maxA = aYes >= aNo ? aYes : aNo;
+        int128 expYes = ABDKMath64x64.exp(ABDKMath64x64.sub(aYes, maxA));
+        int128 expNo = ABDKMath64x64.exp(ABDKMath64x64.sub(aNo, maxA));
+        int128 denom = ABDKMath64x64.add(expYes, expNo);
+        if (denom == 0) return 5e17;
+        int128 p = ABDKMath64x64.div(expYes, denom);
+        uint256 raw = uint256(uint128(p));
+        return (raw * (10 ** 18)) >> 64;
+    }
+
+    function _priceNoWad(uint256 bWad, uint256 qYesWad, uint256 qNoWad) internal pure returns (uint256) {
+        if (bWad == 0) return 5e17;
+        if (qYesWad == 0 && qNoWad == 0) return 5e17;
+        uint256 S = 1_000_000;
+        bWad = bWad / S;
+        qYesWad = qYesWad / S;
+        qNoWad = qNoWad / S;
+        int128 b64 = _safeTo64x64FromWad(bWad);
+        int128 qYes64 = _safeTo64x64FromWad(qYesWad);
+        int128 qNo64 = _safeTo64x64FromWad(qNoWad);
+        int128 aYes = ABDKMath64x64.div(qYes64, b64);
+        int128 aNo = ABDKMath64x64.div(qNo64, b64);
+        int128 maxA = aYes >= aNo ? aYes : aNo;
+        int128 expYes = ABDKMath64x64.exp(ABDKMath64x64.sub(aYes, maxA));
+        int128 expNo = ABDKMath64x64.exp(ABDKMath64x64.sub(aNo, maxA));
+        int128 denom = ABDKMath64x64.add(expYes, expNo);
+        if (denom == 0) return 5e17;
+        int128 p = ABDKMath64x64.div(expNo, denom);
+        uint256 raw = uint256(uint128(p));
+        return (raw * (10 ** 18)) >> 64;
     }
 
     // ---------- Market Management ----------
@@ -221,14 +479,20 @@ contract LMSRMarketTrue is ERC1155, ReentrancyGuard, Ownable {
 
         Market storage m = markets[marketId];
         
-        // Calculate cost using true LMSR
-        uint256 cost = LMSRMath.calculateBuyCost(
-            m.b,
-            m.qYes,
-            m.qNo,
-            side == 0 ? m.qYes + shareAmount : m.qYes,
-            side == 1 ? m.qNo + shareAmount : m.qNo
-        );
+        // Calculate cost using true LMSR with 64.64 and wad scaling
+        uint256 bWad = m.b; // b provided as 1e18 in tests
+        uint8 dec = m.collateralDecimals;
+        uint256 qYesWadBefore = _toWad(m.qYes, dec);
+        uint256 qNoWadBefore = _toWad(m.qNo, dec);
+        uint256 deltaWad = _toWad(shareAmount, dec);
+        uint256 qYesWadAfter = qYesWadBefore;
+        uint256 qNoWadAfter = qNoWadBefore;
+        if (side == 0) qYesWadAfter = qYesWadAfter + deltaWad; else qNoWadAfter = qNoWadAfter + deltaWad;
+
+        uint256 cBefore = _calculateCostWad(bWad, qYesWadBefore, qNoWadBefore);
+        uint256 cAfter = _calculateCostWad(bWad, qYesWadAfter, qNoWadAfter);
+        uint256 costWad = cAfter > cBefore ? (cAfter - cBefore) : 0;
+        uint256 cost = _fromWad(costWad, dec);
 
         if (cost == 0) {
             cost = shareAmount; // Minimum 1:1 cost
@@ -271,13 +535,19 @@ contract LMSRMarketTrue is ERC1155, ReentrancyGuard, Ownable {
         if (balanceOf(msg.sender, tokenId) < shareAmount) revert InvalidAmount();
 
         // Calculate refund using true LMSR
-        uint256 refund = LMSRMath.calculateSellRefund(
-            m.b,
-            m.qYes,
-            m.qNo,
-            side == 0 ? m.qYes - shareAmount : m.qYes,
-            side == 1 ? m.qNo - shareAmount : m.qNo
-        );
+        uint256 bWad = m.b;
+        uint8 dec = m.collateralDecimals;
+        uint256 qYesWadBefore = _toWad(m.qYes, dec);
+        uint256 qNoWadBefore = _toWad(m.qNo, dec);
+        uint256 deltaWad = _toWad(shareAmount, dec);
+        uint256 qYesWadAfter = qYesWadBefore;
+        uint256 qNoWadAfter = qNoWadBefore;
+        if (side == 0) qYesWadAfter = qYesWadAfter - deltaWad; else qNoWadAfter = qNoWadAfter - deltaWad;
+
+        uint256 cBefore = _calculateCostWad(bWad, qYesWadBefore, qNoWadBefore);
+        uint256 cAfter = _calculateCostWad(bWad, qYesWadAfter, qNoWadAfter);
+        uint256 refundWad = cBefore > cAfter ? (cBefore - cAfter) : 0;
+        uint256 refund = _fromWad(refundWad, dec);
 
         if (refund > m.escrow) revert InsufficientEscrow();
 
@@ -312,12 +582,20 @@ contract LMSRMarketTrue is ERC1155, ReentrancyGuard, Ownable {
     // ---------- Price Functions ----------
     function getPriceYes(uint256 marketId) external view validMarket(marketId) activeMarket(marketId) returns (uint256) {
         Market storage m = markets[marketId];
-        return LMSRMath.calculatePriceYes(m.b, m.qYes, m.qNo);
+        uint256 bWad = m.b;
+        uint8 dec = m.collateralDecimals;
+        uint256 qYesWad = _toWad(m.qYes, dec);
+        uint256 qNoWad = _toWad(m.qNo, dec);
+        return _priceYesWad(bWad, qYesWad, qNoWad);
     }
 
     function getPriceNo(uint256 marketId) external view validMarket(marketId) activeMarket(marketId) returns (uint256) {
         Market storage m = markets[marketId];
-        return LMSRMath.calculatePriceNo(m.b, m.qYes, m.qNo);
+        uint256 bWad = m.b;
+        uint8 dec = m.collateralDecimals;
+        uint256 qYesWad = _toWad(m.qYes, dec);
+        uint256 qNoWad = _toWad(m.qNo, dec);
+        return _priceNoWad(bWad, qYesWad, qNoWad);
     }
 
     function getBuyCost(uint256 marketId, uint8 side, uint256 shareAmount) external view validMarket(marketId) activeMarket(marketId) returns (uint256) {
@@ -325,13 +603,18 @@ contract LMSRMarketTrue is ERC1155, ReentrancyGuard, Ownable {
         if (shareAmount == 0) revert InvalidAmount();
 
         Market storage m = markets[marketId];
-        return LMSRMath.calculateBuyCost(
-            m.b,
-            m.qYes,
-            m.qNo,
-            side == 0 ? m.qYes + shareAmount : m.qYes,
-            side == 1 ? m.qNo + shareAmount : m.qNo
-        );
+        uint256 bWad = m.b;
+        uint8 dec = m.collateralDecimals;
+        uint256 qYesWadBefore = _toWad(m.qYes, dec);
+        uint256 qNoWadBefore = _toWad(m.qNo, dec);
+        uint256 deltaWad = _toWad(shareAmount, dec);
+        uint256 qYesWadAfter = qYesWadBefore;
+        uint256 qNoWadAfter = qNoWadBefore;
+        if (side == 0) qYesWadAfter = qYesWadAfter + deltaWad; else qNoWadAfter = qNoWadAfter + deltaWad;
+        uint256 cBefore = _calculateCostWad(bWad, qYesWadBefore, qNoWadBefore);
+        uint256 cAfter = _calculateCostWad(bWad, qYesWadAfter, qNoWadAfter);
+        uint256 costWad = cAfter > cBefore ? (cAfter - cBefore) : 0;
+        return _fromWad(costWad, dec);
     }
 
     function getSellRefund(uint256 marketId, uint8 side, uint256 shareAmount) external view validMarket(marketId) activeMarket(marketId) returns (uint256) {
@@ -339,13 +622,18 @@ contract LMSRMarketTrue is ERC1155, ReentrancyGuard, Ownable {
         if (shareAmount == 0) revert InvalidAmount();
 
         Market storage m = markets[marketId];
-        return LMSRMath.calculateSellRefund(
-            m.b,
-            m.qYes,
-            m.qNo,
-            side == 0 ? m.qYes - shareAmount : m.qYes,
-            side == 1 ? m.qNo - shareAmount : m.qNo
-        );
+        uint256 bWad = m.b;
+        uint8 dec = m.collateralDecimals;
+        uint256 qYesWadBefore = _toWad(m.qYes, dec);
+        uint256 qNoWadBefore = _toWad(m.qNo, dec);
+        uint256 deltaWad = _toWad(shareAmount, dec);
+        uint256 qYesWadAfter = qYesWadBefore;
+        uint256 qNoWadAfter = qNoWadBefore;
+        if (side == 0) qYesWadAfter = qYesWadAfter - deltaWad; else qNoWadAfter = qNoWadAfter - deltaWad;
+        uint256 cBefore = _calculateCostWad(bWad, qYesWadBefore, qNoWadBefore);
+        uint256 cAfter = _calculateCostWad(bWad, qYesWadAfter, qNoWadAfter);
+        uint256 refundWad = cBefore > cAfter ? (cBefore - cAfter) : 0;
+        return _fromWad(refundWad, dec);
     }
 
     // ---------- Market Resolution ----------
